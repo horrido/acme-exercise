@@ -3,26 +3,22 @@ package controllers
 import (
 	"acme/models"
 	pk "acme/utilities/pbkdf2"
-	"bytes"
-	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"github.com/alexcesaro/mail/gomail"
 	"github.com/astaxie/beego"
 	"github.com/astaxie/beego/orm"
 	"github.com/astaxie/beego/validation"
 	"github.com/twinj/uuid"
+	"strings"
 	"time"
 )
-
-type hStruct struct {
-	Hash [32]byte
-	Salt [16]byte
-}
 
 func (this *MainController) Login() {
 	this.activeContent("user/login")
 
-	back := this.Ctx.Input.Param(":back")
+	back := strings.Replace(this.Ctx.Input.Param(":back"), ">", "/", -1) // allow for deeper URL such as l1/l2/l3 represented by l1>l2>l3
+	fmt.Println("back is", back)
 	if this.Ctx.Input.Method() == "POST" {
 		flash := beego.NewFlash()
 		email := this.GetString("email")
@@ -40,8 +36,11 @@ func (this *MainController) Login() {
 		}
 		fmt.Println("Authorization is", email, ":", password)
 
-		//******** Read password hash from database into temp struct y
-		var y hStruct
+		//******** Read password hash from database
+		var x pk.PasswordHash
+
+		x.Hash = make([]byte, 32)
+		x.Salt = make([]byte, 16)
 
 		o := orm.NewOrm()
 		o.Using("default")
@@ -54,20 +53,15 @@ func (this *MainController) Login() {
 				return
 			}
 
-			ibuf := bytes.NewReader([]byte(user.Password))
-			err = binary.Read(ibuf, binary.LittleEndian, &y.Hash)
-			if err != nil {
-				flash.Error("Internal error")
-				flash.Store(&this.Controller)
-				return
+			// scan in the password hash/salt
+			fmt.Println("Password to scan:", user.Password)
+			if x.Hash, err = hex.DecodeString(user.Password[:64]); err != nil {
+				fmt.Println("ERROR:", err)
 			}
-			err = binary.Read(ibuf, binary.LittleEndian, &y.Salt)
-			if err != nil {
-				flash.Error("Internal error")
-				flash.Store(&this.Controller)
-				return
+			if x.Salt, err = hex.DecodeString(user.Password[64:]); err != nil {
+				fmt.Println("ERROR:", err)
 			}
-			fmt.Println("password hash y is", y)
+			fmt.Println("decoded password is", x)
 		} else {
 			flash.Error("No such user/email")
 			flash.Store(&this.Controller)
@@ -75,12 +69,6 @@ func (this *MainController) Login() {
 		}
 
 		//******** Compare submitted password with database
-		var x pk.PasswordHash
-
-		x.Hash = make([]byte, 32)
-		copy(x.Hash, y.Hash[:32])
-		x.Salt = make([]byte, 16)
-		copy(x.Salt, y.Salt[:16])
 		if !pk.MatchPassword(password, &x) {
 			flash.Error("Bad password")
 			flash.Store(&this.Controller)
@@ -142,34 +130,18 @@ func (this *MainController) Register() {
 		user.Last = last
 		user.Email = email
 
-		//******** Convert password hash to string
-		buf := new(bytes.Buffer)
-		err := binary.Write(buf, binary.LittleEndian, h.Hash)
-		if err != nil {
-			flash.Error("Internal error")
-			flash.Store(&this.Controller)
-			return
-		}
-		err = binary.Write(buf, binary.LittleEndian, h.Salt)
-		if err != nil {
-			flash.Error("Internal error")
-			flash.Store(&this.Controller)
-			return
-		}
-		b := buf.Bytes()
-		fmt.Printf("password hash/salt is: %x\n", b)
-		user.Password = string(b)
+		// Convert password hash to string
+		user.Password = hex.EncodeToString(h.Hash) + hex.EncodeToString(h.Salt)
 
-		//******** Add user to database with new uuid and send verification email
+		// Add user to database with new uuid and send verification email
 		u := uuid.NewV4()
 		user.Reg_key = u.String()
-		id, err := o.Insert(user) // BUG: the input parameter MUST be passed by value, contradicting the documentation
+		_, err := o.Insert(user) // BUG: the input parameter MUST be passed by value, contradicting the documentation
 		if err != nil {
 			flash.Error(email + " already registered")
 			flash.Store(&this.Controller)
 			return
 		}
-		fmt.Println("Id =", id)
 
 		if !sendVerification(email, u.String()) {
 			flash.Error("Unable to send verification email")
@@ -192,7 +164,7 @@ func sendVerification(email, u string) bool {
 	msg.SetHeader("Subject", "Account Verification for ACME Corporation")
 	msg.SetBody("text/html", "To verify your account, please click on the link: <a href=\""+link+
 		"\">"+link+"</a><br><br>Best Regards,<br>ACME Corporation")
-	m := gomail.NewMailer(host, "youraccount@gmail.com", "YourPassword", port)
+	m := gomail.NewMailer(host, "miramartwentyone@gmail.com", "Acura3.2TL-2015NSX", port)
 	if err := m.Send(msg); err != nil {
 		return false
 	}
@@ -229,28 +201,24 @@ func (this *MainController) Profile() {
 
 	flash := beego.NewFlash()
 
-	//******** Read password hash from database into temp struct y
-	var y hStruct
+	//******** Read password hash from database
+	var x pk.PasswordHash
+
+	x.Hash = make([]byte, 32)
+	x.Salt = make([]byte, 16)
 
 	o := orm.NewOrm()
 	o.Using("default")
 	user := models.AuthUser{Email: m["username"].(string)}
 	err := o.Read(&user, "Email")
 	if err == nil {
-		ibuf := bytes.NewReader([]byte(user.Password))
-		err = binary.Read(ibuf, binary.LittleEndian, &y.Hash)
-		if err != nil {
-			flash.Error("Internal error")
-			flash.Store(&this.Controller)
-			return
+		// scan in the password hash/salt
+		if x.Hash, err = hex.DecodeString(user.Password[:64]); err != nil {
+			fmt.Println("ERROR:", err)
 		}
-		err = binary.Read(ibuf, binary.LittleEndian, &y.Salt)
-		if err != nil {
-			flash.Error("Internal error")
-			flash.Store(&this.Controller)
-			return
+		if x.Salt, err = hex.DecodeString(user.Password[64:]); err != nil {
+			fmt.Println("ERROR:", err)
 		}
-		fmt.Println("password hash y is", y)
 	} else {
 		flash.Error("Internal error")
 		flash.Store(&this.Controller)
@@ -303,32 +271,11 @@ func (this *MainController) Profile() {
 			}
 			h := pk.HashPassword(password)
 
-			//******** Convert password hash to string
-			buf := new(bytes.Buffer)
-			err = binary.Write(buf, binary.LittleEndian, h.Hash)
-			if err != nil {
-				flash.Error("Internal error")
-				flash.Store(&this.Controller)
-				return
-			}
-			err = binary.Write(buf, binary.LittleEndian, h.Salt)
-			if err != nil {
-				flash.Error("Internal error")
-				flash.Store(&this.Controller)
-				return
-			}
-			b := buf.Bytes()
-			fmt.Printf("password hash/salt is: %x\n", b)
-			user.Password = string(b)
+			// Convert password hash to string
+			user.Password = hex.EncodeToString(h.Hash) + hex.EncodeToString(h.Salt)
 		}
 
 		//******** Compare submitted password with database
-		var x pk.PasswordHash
-
-		x.Hash = make([]byte, 32)
-		copy(x.Hash, y.Hash[:32])
-		x.Salt = make([]byte, 16)
-		copy(x.Salt, y.Salt[:16])
 		if !pk.MatchPassword(current, &x) {
 			flash.Error("Bad current password")
 			flash.Store(&this.Controller)
@@ -379,28 +326,24 @@ func (this *MainController) Remove() {
 
 		flash := beego.NewFlash()
 
-		//******** Read password hash from database into temp struct y
-		var y hStruct
+		//******** Read password hash from database
+		var x pk.PasswordHash
+
+		x.Hash = make([]byte, 32)
+		x.Salt = make([]byte, 16)
 
 		o := orm.NewOrm()
 		o.Using("default")
 		user := models.AuthUser{Email: m["username"].(string)}
 		err := o.Read(&user, "Email")
 		if err == nil {
-			ibuf := bytes.NewReader([]byte(user.Password))
-			err = binary.Read(ibuf, binary.LittleEndian, &y.Hash)
-			if err != nil {
-				flash.Error("Internal error")
-				flash.Store(&this.Controller)
-				return
+			// scan in the password hash/salt
+			if x.Hash, err = hex.DecodeString(user.Password[:64]); err != nil {
+				fmt.Println("ERROR:", err)
 			}
-			err = binary.Read(ibuf, binary.LittleEndian, &y.Salt)
-			if err != nil {
-				flash.Error("Internal error")
-				flash.Store(&this.Controller)
-				return
+			if x.Salt, err = hex.DecodeString(user.Password[64:]); err != nil {
+				fmt.Println("ERROR:", err)
 			}
-			fmt.Println("password hash y is", y)
 		} else {
 			flash.Error("Internal error")
 			flash.Store(&this.Controller)
@@ -408,12 +351,6 @@ func (this *MainController) Remove() {
 		}
 
 		//******** Compare submitted password with database
-		var x pk.PasswordHash
-
-		x.Hash = make([]byte, 32)
-		copy(x.Hash, y.Hash[:32])
-		x.Salt = make([]byte, 16)
-		copy(x.Salt, y.Salt[:16])
 		if !pk.MatchPassword(current, &x) {
 			flash.Error("Bad current password")
 			flash.Store(&this.Controller)
@@ -488,7 +425,7 @@ func sendRequestReset(email, u string) bool {
 	msg.SetHeader("Subject", "Request Password Reset for ACME Corporation")
 	msg.SetBody("text/html", "To reset your password, please click on the link: <a href=\""+link+
 		"\">"+link+"</a><br><br>Best Regards,<br>ACME Corporation")
-	m := gomail.NewMailer(host, "youraccount@gmail.com", "YourPassword", port)
+	m := gomail.NewMailer(host, "miramartwentyone@gmail.com", "Acura3.2TL-2015NSX", port)
 	if err := m.Send(msg); err != nil {
 		return false
 	}
@@ -528,23 +465,8 @@ func (this *MainController) Reset() {
 			}
 			h := pk.HashPassword(password)
 
-			//******** Convert password hash to string
-			buf := new(bytes.Buffer)
-			err = binary.Write(buf, binary.LittleEndian, h.Hash)
-			if err != nil {
-				flash.Error("Internal error")
-				flash.Store(&this.Controller)
-				return
-			}
-			err = binary.Write(buf, binary.LittleEndian, h.Salt)
-			if err != nil {
-				flash.Error("Internal error")
-				flash.Store(&this.Controller)
-				return
-			}
-			b := buf.Bytes()
-			fmt.Printf("password hash/salt is: %x\n", b)
-			user.Password = string(b)
+			// Convert password hash to string
+			user.Password = hex.EncodeToString(h.Hash) + hex.EncodeToString(h.Salt)
 
 			user.Reset_key = ""
 			if _, err := o.Update(&user); err != nil {
