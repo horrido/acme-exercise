@@ -425,7 +425,7 @@ func sendRequestReset(email, u string) bool {
 	msg.SetHeader("Subject", "Request Password Reset for ACME Corporation")
 	msg.SetBody("text/html", "To reset your password, please click on the link: <a href=\""+link+
 		"\">"+link+"</a><br><br>Best Regards,<br>ACME Corporation")
-	m := gomail.NewMailer(host, "miramartwentyone@gmail.com", "Acura3.2TL-2015NSX", port)
+	m := gomail.NewMailer(host, "youraccount@gmail.com", "YourPassword", port)
 	if err := m.Send(msg); err != nil {
 		return false
 	}
